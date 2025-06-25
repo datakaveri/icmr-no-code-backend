@@ -8,13 +8,13 @@ import seaborn as sns
 import click
 import pickle
 import os
-import mpld3
+#import mpld3
 from fpdf import FPDF
 import plotly.express as px
 import plotly.io as pio
 import plotly.graph_objects as go
-from icmr_viz.patient_data import FHIRData, PatientRepository
-from icmr_viz.dataframe import PatientDataProcessor, CustomDataFrame, ObservationRepository, ConditionRepository
+from patient_data import FHIRData, PatientRepository
+from dataframe import PatientDataProcessor, CustomDataFrame, ObservationRepository, ConditionRepository
 from operations import StatisticalOperations, save_results_to_json
 from plotter import GenericPlotter, create_plot,convert_operation_data_to_df,get_y_label_for_operation
 from tables import process_dataframe
@@ -389,7 +389,7 @@ def observation(input):
             config_data = json.load(config_file)
             base_url = config_data.get("base_url")
 
-        from icmr_viz.dataframe import ObservationRepository
+        from dataframe import ObservationRepository
         
         patients_df = pd.read_csv(input)
         observation_repo = ObservationRepository(f"{base_url}/Observation")
@@ -449,7 +449,7 @@ def condition(input):
             base_url = config_data.get("base_url")
         
         # Import required classes (assuming they're available in your environment)
-        from icmr_viz.dataframe import ConditionRepository
+        from dataframe import ConditionRepository
         
         patients_df = pd.read_csv(input)
         condition_repo = ConditionRepository(f"{base_url}/Condition")
@@ -552,6 +552,35 @@ def correlation(input, obs_names_path, cond_names_path):
         filename = save_results_to_json(result, 'correlation')
         click.echo(f"Results saved to {filename}")
             
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        import traceback
+        click.echo("Full error details:")
+        click.echo(traceback.format_exc())
+
+@click.command(help="Performs patient segmentation by any categorical variable, reporting top distinctive conditions per group.")
+@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Processed data CSV file')
+@click.option('--groupby', '-g', required=True, help='Column name to segment patients by (e.g., gender, House, cluster_label)')
+@click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
+@click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
+@click.option('--top-n', '-t', default=5, help='Top N most distinctive conditions to report per group')
+def patient_segmentation(input, groupby, obs_names_path, cond_names_path, top_n):
+    try:
+        df = pd.read_csv(input)
+        stats = StatisticalOperations(df)
+        result = stats.patient_segmentation(groupby, obs_names_path, cond_names_path, top_n)
+        # Print results
+        for group, conditions in result['top_conditions'].items():
+            click.echo(f"\nTop {top_n} conditions for group '{group}':")
+            for cond, group_rate, other_rate, diff in conditions:
+                click.echo(f"  {cond}: {group} {group_rate:.2%} vs Others {other_rate:.2%} (diff: +{diff:.2%})")
+        for group, conditions in result['bottom_conditions'].items():
+            click.echo(f"\nLeast prevalent conditions for group '{group}':")
+            for cond, group_rate, other_rate, diff in conditions:
+                click.echo(f"  {cond}: {group} {group_rate:.2%} vs Others {other_rate:.2%} (diff: {diff:.2%})")
+        # Optionally save to JSON
+        filename = save_results_to_json(result, 'patient_segmentation')
+        click.echo(f"\nSegmentation results saved to {filename}")
     except Exception as e:
         click.echo(f"Error: {e}")
         import traceback
@@ -710,6 +739,7 @@ cli.add_command(std)
 cli.add_command(range)
 cli.add_command(frequency)
 cli.add_command(cluster)
+cli.add_command(patient_segmentation)
 cli.add_command(plot)
 
 if __name__ == '__main__':

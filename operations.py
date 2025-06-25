@@ -4,6 +4,7 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import json
 import os
+import pickle
 
 class StatisticalOperations:
     def __init__(self, df):
@@ -216,6 +217,43 @@ class StatisticalOperations:
             "cluster_labels": cluster_labels.tolist(),
             "cluster_sizes": sizes.to_dict()
         }
+    
+    def patient_segmentation(self, groupby_col, obs_names_path='obs_names.pkl', cond_names_path='cond_names.pkl', top_n=5):
+        """
+        Generalized patient segmentation:
+        - For each group in groupby_col, shows mean prevalence of all disease/observation/condition columns.
+        - Highlights the top N most distinctive conditions for each group.
+        """
+        # Load observation and condition names
+        with open(obs_names_path, 'rb') as f:
+            observation_names = pickle.load(f)
+        with open(cond_names_path, 'rb') as f:
+            condition_names = pickle.load(f)
+        
+        # Only keep columns that are in the dataframe
+        disease_cols = [col for col in observation_names + condition_names if col in self.df.columns]
+        
+        # Drop rows with missing groupby_col
+        df = self.df.dropna(subset=[groupby_col])
+        
+        # Group by the selected column and compute mean prevalence for each group
+        group_disease = df.groupby(groupby_col)[disease_cols].mean()
+        results = {
+            "group_prevalence": group_disease.to_dict(orient='index'),
+            "top_conditions": {},
+            "bottom_conditions": {}
+        }
+        
+        # For each group, find the most distinctive conditions (compared to the mean of all other groups)
+        for group in group_disease.index:
+            group_diff = group_disease.loc[group] - group_disease.drop(index=group).mean()
+            top_conditions = group_diff.nlargest(top_n)
+            results["top_conditions"][group] = [(cond, group_disease.loc[group, cond], group_disease.drop(index=group)[cond].mean(), diff)
+                                                for cond, diff in top_conditions.items()]
+            bottom_conditions = group_diff.nsmallest(top_n)
+            results["bottom_conditions"][group] = [(cond, group_disease.loc[group, cond], group_disease.drop(index=group)[cond].mean(), diff)
+                                                   for cond, diff in bottom_conditions.items()]
+        return results
 
 def save_results_to_json(results, operation_type, filename="operations.json"):
     """Save operation results to JSON file"""
