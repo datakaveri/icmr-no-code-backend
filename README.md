@@ -74,6 +74,17 @@ Download FHIR data and process it for analysis:
 
 ---
 
+## 6. Symptom Co-occurrence
+
+**Calculate the co-occurrence matrix for all symptoms (conditions):**
+
+<pre>python cli.py symptom-cooccurrence --input processed_data.csv --cond-names-path cond_names.pkl --output symptom_cooccurrence.csv</pre>
+
+- This command computes how often each pair of symptoms (conditions) co-occur in the dataset.
+- The output is a matrix saved to `symptom_cooccurrence.csv`, showing for each symptom pair the number of patients who had both.
+
+---
+
 ## Notes
 
 - All commands assume your working directory contains the relevant CSV and pickle files (e.g., `processed_data.csv`, `obs_names.pkl`, `cond_names.pkl`).
