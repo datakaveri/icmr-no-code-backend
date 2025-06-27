@@ -587,6 +587,53 @@ def patient_segmentation(input, groupby, obs_names_path, cond_names_path, top_n)
         click.echo("Full error details:")
         click.echo(traceback.format_exc())
 
+@click.command(help="Compute symptom co-occurrence matrix using only condition columns.")
+@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Processed data CSV file')
+@click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
+@click.option('--output', '-o', default='symptom_cooccurrence.csv', help='Output CSV file for co-occurrence matrix')
+def symptom_cooccurrence(input, cond_names_path, output):
+    try:
+        # Load processed data
+        df = pd.read_csv(input)
+        
+        # Load condition names
+        with open(cond_names_path, 'rb') as f:
+            condition_names = pickle.load(f)
+        
+        # Filter condition columns present in dataframe
+        symptom_cols = [col for col in condition_names if col in df.columns]
+        
+        # Convert to binary (1/0) and drop constant columns
+        symptom_data = df[symptom_cols]
+        symptom_data = symptom_data.replace({2: 0, 'No': 0, 'Yes': 1})
+        symptom_data = symptom_data.loc[:, symptom_data.nunique() > 1]  # Drop constant columns
+        
+        # Compute co-occurrence matrix
+        co_matrix = symptom_data.T.dot(symptom_data)
+        
+        # Add row/column for symptom names
+        co_matrix = co_matrix.reset_index().rename(columns={'index': 'Symptom'})
+        
+        # Save and display results
+        co_matrix.to_csv(output, index=False)
+        click.echo(f"Symptom co-occurrence matrix computed with {len(symptom_cols)} symptoms")
+        click.echo(f"Matrix saved to {output}")
+        
+        # Print top co-occurrences
+        click.echo("\nTop symptom co-occurrences:")
+        melted = co_matrix.melt(id_vars='Symptom', var_name='Symptom2', value_name='Count')
+        melted = melted[melted['Symptom'] != melted['Symptom2']]  # Remove self-pairs
+        top_pairs = melted.nlargest(10, 'Count')
+        
+        for _, row in top_pairs.iterrows():
+            click.echo(f"{row['Symptom']} & {row['Symptom2']}: {row['Count']} patients")
+            
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        import traceback
+        click.echo("Full error details:")
+        click.echo(traceback.format_exc())
+
 @click.command()
 @click.option('--data-file', '-d', default='operations.json', help='JSON file containing operation results (default: operations.json)')
 @click.option('--csv-file', '-f', default='processed_data.csv', help='CSV file to create plot from directly (default: processed_data.csv)')
@@ -740,6 +787,7 @@ cli.add_command(range)
 cli.add_command(frequency)
 cli.add_command(cluster)
 cli.add_command(patient_segmentation)
+cli.add_command(symptom_cooccurrence)
 cli.add_command(plot)
 
 if __name__ == '__main__':
