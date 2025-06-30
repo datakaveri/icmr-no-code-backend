@@ -17,7 +17,7 @@ from icmr_viz.patient_data import FHIRData, PatientRepository
 from icmr_viz.dataframe import PatientDataProcessor, CustomDataFrame, ObservationRepository, ConditionRepository
 from operations import StatisticalOperations, save_results_to_json
 from plotter import GenericPlotter, create_plot,convert_operation_data_to_df,get_y_label_for_operation
-from tables import process_dataframe
+from join_operations import DatasetJoiner
 import string
 import base64
 import statsmodels.api as sm
@@ -116,7 +116,6 @@ def download_data(base_url, processed_data_path, patients_df_path, dataset_name,
     with open('plotly.json', 'w') as f:
         json.dump(plotly_data, f, indent=2)
 
-    # Output completion messages
     click.echo(f"Patients data saved to {patients_df_path}")
     click.echo(f"Processed data saved to {processed_data_path}")
     click.echo(f"Observation names saved to {obs_names_path}")
@@ -131,6 +130,125 @@ def download_data(base_url, processed_data_path, patients_df_path, dataset_name,
     with open(cond_names_path, 'rb') as f:
         cond_names = pickle.load(f)
         click.echo(f"Contents of {cond_names_path}: {cond_names}")
+
+@click.command(help=click.style("Join multiple datasets with various join operations", fg='cyan'))
+@click.option('--processed_files', '-pf', required=True, type=str, help='Comma-separated list of processed data CSV files to join')
+@click.option('--patients_files', '-df', required=True, type=str, help='Comma-separated list of patients data CSV files to join')
+@click.option('--join_types', '-j', type=str, default='inner',help='Comma-separated list of join types (inner,outer,left,right,cross). Default: inner')
+@click.option('--join_columns', '-c', type=str, default='patient_id', help='Comma-separated list of columns to join on. Default: patient_id')
+@click.option('--output_processed', '-op', type=str, default='joined_processed_data.csv',help='Output processed data file name. Default: joined_processed_data.csv')
+@click.option('--output_patients', '-od', type=str, default='joined_patients_df.csv', help='Output patients data file name. Default: joined_patients_df.csv')
+@click.option('--preview', is_flag=True, default=False, help='Preview join operation without executing')
+@click.option('--suffixes', '-s', type=str, default='_x,_y', help='Comma-separated suffixes for overlapping columns. Default: _x,_y')
+def join(processed_files, patients_files, join_types, join_columns, 
+                 output_processed, output_patients, preview, suffixes):
+    
+    try:
+        processed_file_list = [f.strip() for f in processed_files.split(',')]
+        patients_file_list = [f.strip() for f in patients_files.split(',')]
+        join_type_list = [j.strip() for j in join_types.split(',')]
+        join_column_list = [c.strip() for c in join_columns.split(',') if c.strip()]
+        suffix_list = [s.strip() for s in suffixes.split(',')]
+        
+        if len(processed_file_list) != len(patients_file_list):
+            raise click.ClickException("Number of processed files must match number of patients files")
+        
+        if len(processed_file_list) < 2:
+            raise click.ClickException("At least 2 file pairs required for join operation")
+        
+        while len(join_type_list) < len(processed_file_list) - 1:
+            join_type_list.append('inner')
+        
+        while len(suffix_list) < 2:
+            suffix_list.extend(['_x', '_y'])
+        
+        joiner = DatasetJoiner()
+        
+        missing_files = []
+        for pf, df in zip(processed_file_list, patients_file_list):
+            if not os.path.exists(pf):
+                missing_files.append(pf)
+            if not os.path.exists(df):
+                missing_files.append(df)
+        
+        if missing_files:
+            available_files = joiner.get_available_csv_files()
+            click.echo(click.style("Available processed files:", fg='yellow'))
+            for pf in available_files['processed_files']:
+                click.echo(f"  - {pf}")
+            click.echo(click.style("Available patients files:", fg='yellow'))
+            for df in available_files['patients_files']:
+                click.echo(f"  - {df}")
+            raise click.ClickException(f"Missing files: {', '.join(missing_files)}")
+        
+        file_pairs = []
+        
+        # First dataset (base)
+        file_pairs.append({
+            'processed_file': processed_file_list[0],
+            'patients_file': patients_file_list[0],
+            'dataset_label': f"dataset_1_{processed_file_list[0].split('.')[0]}",
+            'join_type': None,  
+            'join_columns': join_column_list if join_column_list else None,
+            'suffixes': (suffix_list[0], suffix_list[1])
+        })
+        
+        for i, (pf, df) in enumerate(zip(processed_file_list[1:], patients_file_list[1:]), 1):
+            join_type = join_type_list[i-1] if i-1 < len(join_type_list) else 'inner'
+            
+            file_pairs.append({
+                'processed_file': pf,
+                'patients_file': df,
+                'dataset_label': f"dataset_{i+1}_{pf.split('.')[0]}",
+                'join_type': join_type,
+                'join_columns': join_column_list if join_column_list else None,
+                'suffixes': (f'_ds1', f'_ds{i+1}')
+            })
+        
+        if preview:
+            click.echo(click.style("Preview Mode - Join Configuration:", fg='cyan'))
+            
+            for i, config in enumerate(file_pairs):
+                processed_df, patients_df = joiner.load_dataset_by_filename(
+                    config['processed_file'], config['patients_file']
+                )
+                
+                click.echo(f"\n{i+1}. Dataset: {config['dataset_label']}")
+                click.echo(f"   Processed file: {config['processed_file']} (shape: {processed_df.shape})")
+                click.echo(f"   Patients file: {config['patients_file']} (shape: {patients_df.shape})")
+                click.echo(f"   Processed columns: {len(processed_df.columns)}")
+                click.echo(f"   Patients columns: {len(patients_df.columns)}")
+            
+            click.echo(f"\nJoin Operations:")
+            for i, config in enumerate(file_pairs[1:], 1):
+                click.echo(f"  {i}. {config['join_type']} join on {config['join_columns']}")
+            
+            click.echo(click.style(f"\nOutput files would be:", fg='green'))
+            click.echo(f"  - {output_processed}")
+            click.echo(f"  - {output_patients}")
+            click.echo(click.style("\nRun without --preview flag to execute the join.", fg='green'))
+            return
+        
+        click.echo(click.style("Executing join operation...", fg='yellow'))
+        
+        processed_result, patients_result = joiner.join_multiple_datasets_by_files(file_pairs)
+        
+        processed_result.to_csv(output_processed, index=False)
+        patients_result.to_csv(output_patients, index=False)
+        
+        click.echo(click.style("✓ Join operation completed successfully!", fg='green'))
+        click.echo(f"  Joined processed data: {output_processed} ({len(processed_result)} records)")
+        click.echo(f"  Joined patients data: {output_patients} ({len(patients_result)} records)")
+        click.echo(f"  Total columns in processed data: {len(processed_result.columns)}")
+        
+        click.echo(f"\nJoin Summary:")
+        for config in file_pairs[1:]:
+            click.echo(f"  - {config['join_type']} join with {config['processed_file']}")
+        
+    except Exception as e:
+        click.echo(click.style(f"✗ Error during join operation: {str(e)}", fg='red'))
+        raise click.ClickException(f"Join operation failed: {str(e)}")
+
 
 @click.command(help="Abbreviates column names in a processed_data CSV file and generates a CSV with original and abbreviated names.")
 @click.option('--processed_data_path', '-i', type=click.Path(exists=True, dir_okay=False, resolve_path=True), default='processed_data.csv', required=True, help='Input Processed data CSV file name')
@@ -711,6 +829,7 @@ cli.add_command(range)
 cli.add_command(frequency)
 cli.add_command(cluster)
 cli.add_command(plot)
+cli.add_command(join)
 
 if __name__ == '__main__':
     cli()
