@@ -2,9 +2,12 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score
+from scipy.stats import pearsonr, spearmanr
 import json
 import os
 import pickle
+import itertools
 
 class StatisticalOperations:
     def __init__(self, df):
@@ -255,6 +258,127 @@ class StatisticalOperations:
                                                    for cond, diff in bottom_conditions.items()]
         return results
 
+    def calculate_prevalence(self, df, disease_col, case_value=1):
+        """
+        Calculates the point prevalence of a disease in the dataset.
+
+        Args:
+            df (pd.DataFrame): The input DataFrame.
+            disease_col (str): Column name indicating disease status (binary or categorical).
+            case_value (int/str): Value in disease_col indicating a case (default: 1).
+
+        Returns:
+            float: Prevalence as a proportion (0-1).
+            float: Prevalence as a percentage (0-100).
+            int: Number of cases.
+            int: Total population (denominator).
+        """
+        # Exclude missing values in the disease column
+        valid = df[disease_col].notnull()
+        total_population = valid.sum()
+        n_cases = (df.loc[valid, disease_col] == case_value).sum()
+
+        prevalence_prop = n_cases / total_population if total_population > 0 else float('nan')
+        prevalence_pct = prevalence_prop * 100
+
+        return prevalence_prop, prevalence_pct, n_cases, total_population
+
+    def correlation_coefficients(self, df, col1=None, col2=None):
+        """
+        Calculates Pearson and Spearman correlation coefficients for specified columns,
+        or for all unique pairs of numeric/binary columns if none specified.
+
+        Args:
+            df (pd.DataFrame): Input DataFrame.
+            col1 (str, optional): First column name.
+            col2 (str, optional): Second column name.
+
+        Returns:
+            pd.DataFrame: Results table with columns:
+                ['col1', 'col2', 'pearson_coefficient', 'pearson_pvalue', 'spearman_coefficient', 'spearman_pvalue']
+        """
+        results = []
+
+        # Helper: get all numeric/binary columns
+        def is_numeric_or_binary(series):
+            if pd.api.types.is_numeric_dtype(series):
+                unique_vals = series.dropna().unique()
+                if len(unique_vals) <= 20:  # Arbitrary: treat <=20 unique as binary/categorical
+                    return True
+                return True
+            return False
+
+        # If columns are specified, just use those
+        if col1 and col2:
+            pairs = [(col1, col2)]
+        else:
+            # Get all numeric/binary columns
+            numeric_cols = [col for col in df.columns if is_numeric_or_binary(df[col])]
+            pairs = list(itertools.combinations(numeric_cols, 2))
+
+        for c1, c2 in pairs:
+            data = df[[c1, c2]].dropna()
+            if data.empty:
+                continue
+            try:
+                pearson_coef, pearson_p = pearsonr(data[c1], data[c2])
+                spearman_coef, spearman_p = spearmanr(data[c1], data[c2])
+                results.append({
+                    'col1': c1,
+                    'col2': c2,
+                    'pearson_coefficient': pearson_coef,
+                    'pearson_pvalue': pearson_p,
+                    'spearman_coefficient': spearman_coef,
+                    'spearman_pvalue': spearman_p
+                })
+            except Exception as e:
+                results.append({
+                    'col1': c1,
+                    'col2': c2,
+                    'pearson_coefficient': None,
+                    'pearson_pvalue': None,
+                    'spearman_coefficient': None,
+                    'spearman_pvalue': None,
+                    'error': str(e)
+                })
+        return pd.DataFrame(results)
+
+    def calculate_covariance(self, df, col1=None, col2=None):
+        """
+        Calculates covariance between specified columns or all numeric pairs.
+        
+        Args:
+            df (pd.DataFrame): Input DataFrame
+            col1 (str): First column (optional)
+            col2 (str): Second column (optional)
+            
+        Returns:
+            pd.DataFrame: Columns ['col1', 'col2', 'covariance']
+        """
+        # Get numeric columns
+        numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+        
+        if col1 and col2:
+            # Single pair case
+            cov_value = df[col1].cov(df[col2])
+            return pd.DataFrame({
+                'col1': [col1],
+                'col2': [col2],
+                'covariance': [cov_value]
+            })
+        else:
+            # All pairs case
+            pairs = list(itertools.combinations(numeric_cols, 2))
+            results = []
+            for c1, c2 in pairs:
+                cov_value = df[c1].cov(df[c2])
+                results.append({
+                    'col1': c1,
+                    'col2': c2,
+                    'covariance': cov_value
+                })
+            return pd.DataFrame(results)
+        
 def save_results_to_json(results, operation_type, filename="operations.json"):
     """Save operation results to JSON file"""
     if os.path.exists(filename):

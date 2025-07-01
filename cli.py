@@ -347,24 +347,31 @@ def frequency(file, column, proportion):
         click.echo(f"Error: {e}")
 
 @click.command()
-@click.option('--file', '-f',default='processed_data.csv' ,required=True, help='CSV file path')
+@click.option('--file', '-f', default='processed_data.csv', required=True, help='CSV file path')
 @click.option('--features', help='Comma-separated list of features to use for clustering')
 @click.option('--clusters', '-k', default=3, help='Number of clusters (default: 3)')
 @click.option('--topx', '-t', default=3, help='Number of top clusters to show (default: 3)')
-def cluster(file, features, clusters, topx):
+@click.option('--segment-clusters', is_flag=True, help='If set, perform patient segmentation on resulting clusters')
+@click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
+@click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
+@click.option('--seg-top-n', default=5, help='Top N most distinctive conditions to report per cluster (for segmentation)')
+def cluster(file, features, clusters, topx, segment_clusters, obs_names_path, cond_names_path, seg_top_n):
     try:
         df = pd.read_csv(file)
         stats = StatisticalOperations(df)
-        result = stats.perform_clustering(features, clusters, topx)
-        
+        result = stats.perform_clustering(
+            features, clusters, topx,
+            segment_clusters=segment_clusters,
+            obs_names_path=obs_names_path,
+            cond_names_path=cond_names_path,
+            top_n=seg_top_n
+        )
         if 'error' in result:
             click.echo(f"Error: {result['error']}")
             return
-        
         click.echo(f"Clustering Analysis with {result['clusters']} clusters:")
         click.echo(f"Features used: {', '.join(result['features'])}")
         click.echo(f"\nTop {topx} most distinct clusters:")
-        
         for cluster_id, info in result['top_clusters'].items():
             click.echo(f"\nCluster {cluster_id}:")
             click.echo(f"  Size: {info['size']} samples")
@@ -372,13 +379,25 @@ def cluster(file, features, clusters, topx):
             click.echo("  Feature Means:")
             for feature, mean_val in info['means'].items():
                 click.echo(f"    {feature}: {mean_val:.4f}")
-        
-        
+        # --- Patient segmentation output ---
+        if segment_clusters and 'cluster_segmentation' in result:
+            seg = result['cluster_segmentation']
+            click.echo("\n=== Patient Segmentation by Cluster ===")
+            for group, conditions in seg['top_conditions'].items():
+                click.echo(f"\nTop {seg_top_n} conditions for cluster '{group}':")
+                for cond, group_rate, other_rate, diff in conditions:
+                    click.echo(f"  {cond}: Cluster {group_rate:.2%} vs Others {other_rate:.2%} (diff: +{diff:.2%})")
+            for group, conditions in seg['bottom_conditions'].items():
+                click.echo(f"\nLeast prevalent conditions for cluster '{group}':")
+                for cond, group_rate, other_rate, diff in conditions:
+                    click.echo(f"  {cond}: Cluster {group_rate:.2%} vs Others {other_rate:.2%} (diff: {diff:.2%})")
         filename = save_results_to_json(result, 'clustering')
         click.echo(f"Results saved to {filename}")
-            
     except Exception as e:
         click.echo(f"Error: {e}")
+        import traceback
+        click.echo("Full error details:")
+        click.echo(traceback.format_exc())
 
 @click.command()
 @click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='patients_df.csv', help='Provide the file name for Patients data')
@@ -504,7 +523,8 @@ def condition(input):
 @click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Provide the file name for processed data')
 @click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
 @click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
-def correlation(input, obs_names_path, cond_names_path):
+@click.option('--symptom-cooccurrence', default=False, help='If set, also compute and output the symptom co-occurrence matrix for conditions.')
+def correlation(input, obs_names_path, cond_names_path, symptom_cooccurrence):
     try:
         processed_data = pd.read_csv(input)
         
@@ -548,91 +568,104 @@ def correlation(input, obs_names_path, cond_names_path):
                 click.echo(f"  Correlation range: {min(correlations):.3f} to {max(correlations):.3f}")
                 click.echo(f"  Average correlation: {np.mean(correlations):.3f}")
 
-
         filename = save_results_to_json(result, 'correlation')
         click.echo(f"Results saved to {filename}")
-            
+
+        # --- Symptom co-occurrence as an extra feature ---
+        if symptom_cooccurrence:
+            symptom_cols = [col for col in condition_names if col in processed_data.columns]
+            # Convert to binary (1/0) if needed
+            symptom_data = processed_data[symptom_cols].replace({2: 0, 'No': 0, 'Yes': 1})
+            symptom_data = symptom_data.loc[:, symptom_data.nunique() > 1]  # Drop constant columns
+            co_matrix = symptom_data.T.dot(symptom_data)
+            co_matrix.to_csv("symptom_cooccurrence.csv")
+            click.echo(f"\nSymptom co-occurrence matrix saved to symptom_cooccurrence.csv")
+            # Optionally print top co-occurrences
+            click.echo("\nTop symptom co-occurrences:")
+            melted = co_matrix.reset_index().melt(id_vars='index', var_name='Symptom2', value_name='Count')
+            melted = melted[melted['index'] != melted['Symptom2']]
+            top_pairs = melted.nlargest(10, 'Count')
+            for _, row in top_pairs.iterrows():
+                click.echo(f"{row['index']} & {row['Symptom2']}: {row['Count']} patients")
+
     except Exception as e:
         click.echo(f"Error: {e}")
         import traceback
         click.echo("Full error details:")
         click.echo(traceback.format_exc())
 
-@click.command(help="Performs patient segmentation by any categorical variable, reporting top distinctive conditions per group.")
-@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Processed data CSV file')
-@click.option('--groupby', '-g', required=True, help='Column name to segment patients by (e.g., gender, House, cluster_label)')
-@click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
-@click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
-@click.option('--top-n', '-t', default=5, help='Top N most distinctive conditions to report per group')
-def patient_segmentation(input, groupby, obs_names_path, cond_names_path, top_n):
-    try:
-        df = pd.read_csv(input)
-        stats = StatisticalOperations(df)
-        result = stats.patient_segmentation(groupby, obs_names_path, cond_names_path, top_n)
-        # Print results
-        for group, conditions in result['top_conditions'].items():
-            click.echo(f"\nTop {top_n} conditions for group '{group}':")
-            for cond, group_rate, other_rate, diff in conditions:
-                click.echo(f"  {cond}: {group} {group_rate:.2%} vs Others {other_rate:.2%} (diff: +{diff:.2%})")
-        for group, conditions in result['bottom_conditions'].items():
-            click.echo(f"\nLeast prevalent conditions for group '{group}':")
-            for cond, group_rate, other_rate, diff in conditions:
-                click.echo(f"  {cond}: {group} {group_rate:.2%} vs Others {other_rate:.2%} (diff: {diff:.2%})")
-        # Optionally save to JSON
-        filename = save_results_to_json(result, 'patient_segmentation')
-        click.echo(f"\nSegmentation results saved to {filename}")
-    except Exception as e:
-        click.echo(f"Error: {e}")
-        import traceback
-        click.echo("Full error details:")
-        click.echo(traceback.format_exc())
+@click.command()
+@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Provide the file name for processed data')
+@click.option('--disease-col', required=True, help='Disease column name in the loaded DataFrame.')
+@click.option('--case-value', default=1, help='Value indicating a positive case (default: 1).')
+def prevalence(input, disease_col, case_value):
+    """
+    Calculate disease prevalence from pickle files.
 
-@click.command(help="Compute symptom co-occurrence matrix using only condition columns.")
-@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Processed data CSV file')
-@click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
-@click.option('--output', '-o', default='symptom_cooccurrence.csv', help='Output CSV file for co-occurrence matrix')
-def symptom_cooccurrence(input, cond_names_path, output):
-    try:
-        # Load processed data
-        df = pd.read_csv(input)
-        
-        # Load condition names
-        with open(cond_names_path, 'rb') as f:
-            condition_names = pickle.load(f)
-        
-        # Filter condition columns present in dataframe
-        symptom_cols = [col for col in condition_names if col in df.columns]
-        
-        # Convert to binary (1/0) and drop constant columns
-        symptom_data = df[symptom_cols]
-        symptom_data = symptom_data.replace({2: 0, 'No': 0, 'Yes': 1})
-        symptom_data = symptom_data.loc[:, symptom_data.nunique() > 1]  # Drop constant columns
-        
-        # Compute co-occurrence matrix
-        co_matrix = symptom_data.T.dot(symptom_data)
-        
-        # Add row/column for symptom names
-        co_matrix = co_matrix.reset_index().rename(columns={'index': 'Symptom'})
-        
-        # Save and display results
-        co_matrix.to_csv(output, index=False)
-        click.echo(f"Symptom co-occurrence matrix computed with {len(symptom_cols)} symptoms")
-        click.echo(f"Matrix saved to {output}")
-        
-        # Print top co-occurrences
-        click.echo("\nTop symptom co-occurrences:")
-        melted = co_matrix.melt(id_vars='Symptom', var_name='Symptom2', value_name='Count')
-        melted = melted[melted['Symptom'] != melted['Symptom2']]  # Remove self-pairs
-        top_pairs = melted.nlargest(10, 'Count')
-        
-        for _, row in top_pairs.iterrows():
-            click.echo(f"{row['Symptom']} & {row['Symptom2']}: {row['Count']} patients")
-            
-    except Exception as e:
-        click.echo(f"Error: {e}")
-        import traceback
-        click.echo("Full error details:")
-        click.echo(traceback.format_exc())
+    Example:
+      python cli.py prevalence --conditions-pkl conditions.pkl --disease-col "Diabetes" --case-value 1
+    """
+    df = pd.read_csv(input)
+   
+    stats_ops = StatisticalOperations(df)
+    prevalence_prop, prevalence_pct, n_cases, total_population = stats_ops.calculate_prevalence(df, disease_col, case_value)
+
+    click.echo(f"Disease column: {disease_col}")
+    click.echo(f"Number of cases: {n_cases}")
+    click.echo(f"Total population: {total_population}")
+    click.echo(f"Prevalence: {prevalence_prop:.4f} ({prevalence_pct:.2f}%)")
+
+
+@click.command()
+@click.option('--input-file', required=True, type=click.Path(exists=True), help="Path to input CSV/Excel file.")
+@click.option('--col1', required=False, help="First column name (optional).")
+@click.option('--col2', required=False, help="Second column name (optional).")
+def corr_coefficient(input_file, col1, col2):
+    """
+    Calculate Pearson and Spearman correlation coefficients between two columns,
+    or all pairs if columns are not specified.
+
+    Example:
+      python cli.py corr-coefficient --input-file processed_data.csv --col1 "A" --col2 "B"
+      python cli.py corr-coefficient --input-file processed_data.csv
+    """
+    df = pd.read_csv(input_file)
+    stats_ops = StatisticalOperations(df)
+    results_df = stats_ops.correlation_coefficients(df, col1, col2)
+    if results_df.empty:
+        click.echo("No valid pairs found or no numeric/binary columns.")
+    else:
+        click.echo(results_df.to_string(index=False))
+        results_df.to_csv("correlation_results.csv", index=False)
+        click.echo("Results saved to correlation_results.csv")
+
+@click.command()
+@click.option('--input-file', required=True, type=click.Path(exists=True), help="Path to input data file")
+@click.option('--col1', required=False, help="First column name")
+@click.option('--col2', required=False, help="Second column name")
+def covariance(input_file, col1, col2):
+    """
+    Calculate covariance between two columns or all numeric pairs.
+    
+    Examples:
+      # Single pair
+      python cli.py covariance --input-file processed_data.csv --col1 "Chills" --col2 "Livestock farmer"
+      
+      # All pairs
+      python cli.py covariance --input-file processed_data.csv
+    """
+    # Read data (supports CSV/Excel)
+    if input_file.endswith('.csv'):
+        df = pd.read_csv(input_file)
+    else:
+        df = pd.read_excel(input_file)
+    
+    stats_ops = StatisticalOperations(df)
+    results = stats_ops.calculate_covariance(df, col1, col2)
+    
+    click.echo(results.to_string(index=False))
+    results.to_csv("covariance_results.csv", index=False)
+    click.echo("Results saved to covariance_results.csv")
 
 @click.command()
 @click.option('--data-file', '-d', default='operations.json', help='JSON file containing operation results (default: operations.json)')
@@ -786,8 +819,9 @@ cli.add_command(std)
 cli.add_command(range)
 cli.add_command(frequency)
 cli.add_command(cluster)
-cli.add_command(patient_segmentation)
-cli.add_command(symptom_cooccurrence)
+cli.add_command(prevalence)
+cli.add_command(corr_coefficient)
+cli.add_command(covariance)
 cli.add_command(plot)
 
 if __name__ == '__main__':
