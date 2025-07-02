@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import confusion_matrix, accuracy_score
 from scipy.stats import pearsonr, spearmanr
 import json
 import os
@@ -157,70 +157,6 @@ class StatisticalOperations:
                 frequencies[col] = freq.to_dict()
             
             return {"frequencies": frequencies, "columns": list(categorical_cols), "proportion": proportion}
-    
-    def perform_clustering(self, features=None, clusters=3, topx=3):
-        """Perform K-Means clustering on suitable columns"""
-        df_copy = self.df.copy()
-        
-        # Handle gender encoding
-        if 'gender' in df_copy.columns:
-            gender_map = {'M': 1, 'F': 0, 'Male': 1, 'Female': 0, 'male': 1, 'female': 0}
-            df_copy['gender'] = df_copy['gender'].map(gender_map)
-        
-        if not features:
-            # Auto-select features
-            num_cols = df_copy.select_dtypes(include=[np.number]).columns.tolist()
-            bin_obj_cols = [col for col in df_copy.select_dtypes(include=['object', 'category']).columns
-                           if df_copy[col].nunique(dropna=False) == 2]
-            
-            # Encode binary object/category columns
-            for col in bin_obj_cols:
-                df_copy[col] = LabelEncoder().fit_transform(df_copy[col].astype(str))
-            
-            features_list = num_cols + bin_obj_cols
-            features_list = [col for col in features_list if df_copy[col].nunique(dropna=False) > 1 and not df_copy[col].isnull().all()]
-            
-            if not features_list:
-                return {"error": "No suitable columns found for clustering."}
-        else:
-            features_list = [col.strip() for col in features.split(',')]
-        
-        X = df_copy[features_list].dropna()
-        if X.empty:
-            return {"error": "No data available after removing NaN values."}
-        
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        kmeans = KMeans(n_clusters=clusters, random_state=42)
-        cluster_labels = kmeans.fit_predict(X_scaled)
-        
-        # Profile clusters
-        cluster_profiles = X.copy()
-        cluster_profiles['Cluster'] = cluster_labels
-        means = cluster_profiles.groupby('Cluster').mean()
-        sizes = cluster_profiles['Cluster'].value_counts().sort_values(ascending=False)
-        
-        # Calculate distinctness
-        distinctness = means.apply(lambda row: np.sum(np.abs(row)), axis=1)
-        top_clusters = distinctness.sort_values(ascending=False).head(topx).index.tolist()
-        
-        cluster_info = {}
-        for c in top_clusters:
-            cluster_info[c] = {
-                "size": int(sizes[c]),
-                "means": means.loc[c].to_dict(),
-                "distinctness": float(distinctness[c])
-            }
-        
-        return {
-            "clusters": clusters,
-            "features": features_list,
-            "top_clusters": cluster_info,
-            "cluster_labels": cluster_labels.tolist(),
-            "cluster_sizes": sizes.to_dict()
-        }
-    
     def patient_segmentation(self, groupby_col, obs_names_path='obs_names.pkl', cond_names_path='cond_names.pkl', top_n=5):
         """
         Generalized patient segmentation:
@@ -257,7 +193,96 @@ class StatisticalOperations:
             results["bottom_conditions"][group] = [(cond, group_disease.loc[group, cond], group_disease.drop(index=group)[cond].mean(), diff)
                                                    for cond, diff in bottom_conditions.items()]
         return results
+    
+    def perform_clustering(self, features=None, clusters=3, topx=3, segment_clusters=False, obs_names_path=None, cond_names_path=None, top_n=5):
+        """Perform K-Means clustering on suitable columns, optionally segment clusters."""
+        df_copy = self.df.copy()
+        
+        # Handle gender encoding
+        if 'gender' in df_copy.columns:
+            gender_map = {'M': 1, 'F': 0, 'Male': 1, 'Female': 0, 'male': 1, 'female': 0}
+            df_copy['gender'] = df_copy['gender'].map(gender_map)
+        
+        if not features:
+            # Auto-select features
+            num_cols = df_copy.select_dtypes(include=[np.number]).columns.tolist()
+            bin_obj_cols = [col for col in df_copy.select_dtypes(include=['object', 'category']).columns
+                           if df_copy[col].nunique(dropna=False) == 2]
+            
+            # Encode binary object/category columns
+            for col in bin_obj_cols:
+                df_copy[col] = LabelEncoder().fit_transform(df_copy[col].astype(str))
+            
+            features_list = num_cols + bin_obj_cols
+            features_list = [col for col in features_list if df_copy[col].nunique(dropna=False) > 1 and not df_copy[col].isnull().all()]
+            
+            if not features_list:
+                return {"error": "No suitable columns found for clustering."}
+        else:
+            features_list = [col.strip() for col in features.split(',')]
+        
+        X = df_copy[features_list].dropna()
+        if X.empty:
+            return {"error": "No data available after removing NaN values."}
+        
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        kmeans = KMeans(n_clusters=clusters, random_state=42)
+        cluster_labels = kmeans.fit_predict(X_scaled)
 
+        # After assigning cluster_labels
+        cluster_profiles = X.copy()
+        cluster_profiles['Cluster'] = cluster_labels
+        means = cluster_profiles.groupby('Cluster').mean()
+        sizes = cluster_profiles['Cluster'].value_counts().sort_values(ascending=False)
+        distinctness = means.apply(lambda row: np.sum(np.abs(row)), axis=1)
+        top_clusters = distinctness.sort_values(ascending=False).head(topx).index.tolist()
+        cluster_info = {}
+        for c in top_clusters:
+            cluster_info[c] = {
+                "size": int(sizes[c]),
+                "means": means.loc[c].to_dict(),
+                "distinctness": float(distinctness[c])
+            }
+        result = {
+            "clusters": clusters,
+            "features": features_list,
+            "top_clusters": cluster_info,
+            "cluster_labels": cluster_labels.tolist(),
+            "cluster_sizes": sizes.to_dict()
+        }
+        # --- Patient segmentation feature ---
+        if segment_clusters and obs_names_path and cond_names_path:
+            # Add cluster labels to the original dataframe for segmentation
+            df_seg = self.df.copy()
+            df_seg = df_seg.loc[X.index].copy()
+            df_seg['Cluster'] = cluster_labels
+            # Use patient_segmentation with 'Cluster' as groupby_col
+            seg_stats = StatisticalOperations(df_seg)
+            segmentation_result = seg_stats.patient_segmentation(
+                groupby_col='Cluster',
+                obs_names_path=obs_names_path,
+                cond_names_path=cond_names_path,
+                top_n=top_n
+            )
+            result['cluster_segmentation'] = segmentation_result
+        return result
+
+    def create_confusion_matrix(self, y_true_col, y_pred_col):
+        """
+        Creates a confusion matrix given the true and predicted column names in the dataframe.
+        Returns the confusion matrix as a pandas DataFrame.
+        """
+        y_true = self.df[y_true_col]
+        y_pred = self.df[y_pred_col]
+        cm = confusion_matrix(y_true, y_pred)
+        labels = sorted(list(set(y_true) | set(y_pred)))
+        cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+        cm_df.index.name = 'Actual'
+        cm_df.columns.name = 'Predicted'
+        return cm_df
+    
     def calculate_prevalence(self, df, disease_col, case_value=1):
         """
         Calculates the point prevalence of a disease in the dataset.
@@ -378,7 +403,7 @@ class StatisticalOperations:
                     'covariance': cov_value
                 })
             return pd.DataFrame(results)
-        
+
 def save_results_to_json(results, operation_type, filename="operations.json"):
     """Save operation results to JSON file"""
     if os.path.exists(filename):
