@@ -9,20 +9,18 @@ import click
 import pickle
 import os
 #import mpld3
-from fpdf import FPDF
 import plotly.express as px
 import plotly.io as pio
 import plotly.graph_objects as go
 from patient_data import FHIRData, PatientRepository
 from dataframe import PatientDataProcessor, CustomDataFrame, ObservationRepository, ConditionRepository
-from operations import StatisticalOperations, save_results_to_json
-from plotter import GenericPlotter, create_plot,convert_operation_data_to_df,get_y_label_for_operation
+from operations.core import StatisticalOperations,save_results_to_json
+from plotter.core import GenericPlotter,convert_operation_data_to_df,create_plot,get_y_label_for_operation
 from join_operations import DatasetJoiner
 import string
 import base64
 import statsmodels.api as sm
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+
 
 def remove_punctuation(input_string):
     translator = str.maketrans("", "", string.punctuation)
@@ -39,32 +37,6 @@ def abbreviate_name(name, prefix, duplicate_col_check, duplicate_counter):
         abbr_col = f"{abbr_col}{duplicate_counter}"
         duplicate_counter += 1
     return f"{prefix}_{abbr_col}", duplicate_counter
-
-def save_plot_to_json(fig, plot_type, plot_name=None):
-    """Save plot data to plotly.json file"""
-    plotly_file = 'plotly.json'
-    
-    # Load existing data or create new structure
-    if os.path.exists(plotly_file):
-        with open(plotly_file, 'r') as f:
-            plot_data = json.load(f)
-    else:
-        plot_data = {'plots': []}
-    
-    # Create plot entry
-    plot_entry = {
-        'type': plot_type,
-        'data': pio.to_json(fig)
-    }
-    
-    if plot_name:
-        plot_entry['name'] = plot_name
-    
-    # Add to plots list
-    plot_data['plots'].append(plot_entry)
-
-    with open(plotly_file, 'w') as f:
-        json.dump(plot_data, f, indent=2)
 
 @click.command(help=click.style("Downloads the FHIR dataframe to patient_data.csv file by default (to store it in a custom location)", fg='yellow'))
 @click.option('--base_url', default='http://localhost:8080/fhir', type=str, help='FHIR Base URL')
@@ -453,9 +425,9 @@ def frequency(file, column, proportion):
                 click.echo(f"  {col}:")
                 for category, count in freq_dict.items():
                     if proportion:
-                        click.echo(f"    {category}: {count:.4f}")
+                        click.echo(f"{category}: {count:.4f}")
                     else:
-                        click.echo(f"    {category}: {count}")
+                        click.echo(f"{category}: {count}")
         
         
         filename = save_results_to_json(result, 'frequency')
@@ -641,8 +613,7 @@ def condition(input):
 @click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Provide the file name for processed data')
 @click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
 @click.option('--cond-names-path', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Condition names pickle file')
-@click.option('--symptom-cooccurrence', default=False, help='If set, also compute and output the symptom co-occurrence matrix for conditions.')
-def correlation(input, obs_names_path, cond_names_path, symptom_cooccurrence):
+def correlation(input, obs_names_path, cond_names_path):
     try:
         processed_data = pd.read_csv(input)
         
@@ -689,23 +660,6 @@ def correlation(input, obs_names_path, cond_names_path, symptom_cooccurrence):
         filename = save_results_to_json(result, 'correlation')
         click.echo(f"Results saved to {filename}")
 
-        # --- Symptom co-occurrence as an extra feature ---
-        if symptom_cooccurrence:
-            symptom_cols = [col for col in condition_names if col in processed_data.columns]
-            # Convert to binary (1/0) if needed
-            symptom_data = processed_data[symptom_cols].replace({2: 0, 'No': 0, 'Yes': 1})
-            symptom_data = symptom_data.loc[:, symptom_data.nunique() > 1]  # Drop constant columns
-            co_matrix = symptom_data.T.dot(symptom_data)
-            co_matrix.to_csv("symptom_cooccurrence.csv")
-            click.echo(f"\nSymptom co-occurrence matrix saved to symptom_cooccurrence.csv")
-            # Optionally print top co-occurrences
-            click.echo("\nTop symptom co-occurrences:")
-            melted = co_matrix.reset_index().melt(id_vars='index', var_name='Symptom2', value_name='Count')
-            melted = melted[melted['index'] != melted['Symptom2']]
-            top_pairs = melted.nlargest(10, 'Count')
-            for _, row in top_pairs.iterrows():
-                click.echo(f"{row['index']} & {row['Symptom2']}: {row['Count']} patients")
-
     except Exception as e:
         click.echo(f"Error: {e}")
         import traceback
@@ -714,81 +668,256 @@ def correlation(input, obs_names_path, cond_names_path, symptom_cooccurrence):
 
 @click.command()
 @click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Provide the file name for processed data')
-@click.option('--disease-col', required=True, help='Disease column name in the loaded DataFrame.')
-@click.option('--case-value', default=1, help='Value indicating a positive case (default: 1).')
+@click.option('--disease_col', help='Disease column name in the loaded DataFrame. If not specified, prevalence will be calculated for all columns.')
+@click.option('--case_value', default=1, help='Value indicating a positive case (default: 1).')
 def prevalence(input, disease_col, case_value):
-    """
-    Calculate disease prevalence from pickle files.
+    try:
+        df = pd.read_csv(input)
+        stats_ops = StatisticalOperations(df)
+        
+        if disease_col:
+            prevalence_prop, prevalence_pct, n_cases, total_population = stats_ops.calculate_prevalence(df, disease_col, case_value)
 
-    Example:
-      python cli.py prevalence --conditions-pkl conditions.pkl --disease-col "Diabetes" --case-value 1
-    """
-    df = pd.read_csv(input)
-   
-    stats_ops = StatisticalOperations(df)
-    prevalence_prop, prevalence_pct, n_cases, total_population = stats_ops.calculate_prevalence(df, disease_col, case_value)
-
-    click.echo(f"Disease column: {disease_col}")
-    click.echo(f"Number of cases: {n_cases}")
-    click.echo(f"Total population: {total_population}")
-    click.echo(f"Prevalence: {prevalence_prop:.4f} ({prevalence_pct:.2f}%)")
+            click.echo(f"Disease column: {disease_col}")
+            click.echo(f"Number of cases: {n_cases}")
+            click.echo(f"Total population: {total_population}")
+            click.echo(f"Prevalence: {prevalence_prop:.4f} ({prevalence_pct:.2f}%)")
+            
+            result = {
+                'disease_column': disease_col,
+                'case_value': case_value,
+                'n_cases': n_cases,
+                'total_population': total_population,
+                'prevalence_proportion': prevalence_prop,
+                'prevalence_percentage': prevalence_pct
+            }
+            
+            filename = save_results_to_json(result, 'prevalence')
+            click.echo(f"Results saved to {filename}")
+        else:
+            click.echo("No disease column specified. Calculating prevalence for all columns:")
+            click.echo("-" * 60)
+            
+            all_results = {}
+            
+            for col in df.columns:
+                try:
+                    prevalence_prop, prevalence_pct, n_cases, total_population = stats_ops.calculate_prevalence(df, col, case_value)
+                    
+                    click.echo(f"\nColumn: {col}")
+                    click.echo(f"Number of cases: {n_cases}")
+                    click.echo(f"Total population: {total_population}")
+                    click.echo(f"Prevalence: {prevalence_prop:.4f} ({prevalence_pct:.2f}%)")
+                    
+                    all_results[col] = {
+                        'case_value': case_value,
+                        'n_cases': n_cases,
+                        'total_population': total_population,
+                        'prevalence_proportion': prevalence_prop,
+                        'prevalence_percentage': prevalence_pct
+                    }
+                except Exception as col_error:
+                    click.echo(f"\nColumn: {col} - Error: {str(col_error)}")
+                    continue
+            
+            result = {
+                'case_value': case_value,
+                'results_by_column': all_results,
+                'total_columns_processed': len(all_results)
+            }
+            
+            filename = save_results_to_json(result, 'prevalence')
+            click.echo(f"\nResults for all columns saved to {filename}")
+            
+    except Exception as e:
+        click.echo(f"Error: {str(e)}")
 
 
 @click.command()
-@click.option('--input-file', required=True, type=click.Path(exists=True), help="Path to input CSV/Excel file.")
+@click.option('--input-file', required=True, type=click.Path(exists=True),default='processed_data.csv', help="Path to input CSV/Excel file.")
 @click.option('--col1', required=False, help="First column name (optional).")
 @click.option('--col2', required=False, help="Second column name (optional).")
 def corr_coefficient(input_file, col1, col2):
-    """
-    Calculate Pearson and Spearman correlation coefficients between two columns,
-    or all pairs if columns are not specified.
+    try:
+        df = pd.read_csv(input_file)
+        stats_ops = StatisticalOperations(df)
+        results = stats_ops.correlation_coefficients(df, col1, col2)
 
-    Example:
-      python cli.py corr-coefficient --input-file processed_data.csv --col1 "A" --col2 "B"
-      python cli.py corr-coefficient --input-file processed_data.csv
-    """
-    df = pd.read_csv(input_file)
-    stats_ops = StatisticalOperations(df)
-    results_df = stats_ops.correlation_coefficients(df, col1, col2)
-    if results_df.empty:
-        click.echo("No valid pairs found or no numeric/binary columns.")
-    else:
-        click.echo(results_df.to_string(index=False))
-        results_df.to_csv("correlation_results.csv", index=False)
-        click.echo("Results saved to correlation_results.csv")
+        if results.empty:
+            click.echo("No valid pairs found or no numeric/binary columns.")
+            result = {
+                'error': 'No valid pairs found or no numeric/binary columns',
+                'columns_analyzed': [col1, col2] if col1 and col2 else 'all_numeric'
+            }
+        else:
+            click.echo(results.to_string(index=False))
+            results.to_csv("correlation_results.csv", index=False)
+            click.echo("Results saved to correlation_results.csv")
+            
+            correlations = {}
+            columns = results.columns.tolist()
+            
+            if len(columns) >= 3 and any('corr' in col.lower() for col in columns):
+                corr_col = next((col for col in columns if 'corr' in col.lower()), columns[-1])
+                
+                for _, row in results.iterrows():
+                    if len(columns) >= 3:
+                        col1_val = row[columns[0]]
+                        col2_val = row[columns[1]]
+                        corr_val = row[corr_col]
+                        pair_key = f"{col1_val}_vs_{col2_val}"
+                        correlations[pair_key] = {
+                            'column1': col1_val,
+                            'column2': col2_val,
+                            'correlation': corr_val
+                        }
+            else:
+                # If structure is different, convert entire DataFrame to dict
+                correlations = results.to_dict('records')
+            
+            result = {
+                'correlations': correlations,
+                'total_pairs': len(results),
+                'columns_analyzed': [col1, col2] if col1 and col2 else 'all_numeric',
+                'dataframe_columns': columns
+            }
+        
+        filename = save_results_to_json(result, 'corr_coefficient')
+        click.echo(f"Results saved to {filename}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}")
+
 
 @click.command()
-@click.option('--input-file', required=True, type=click.Path(exists=True), help="Path to input data file")
+@click.option('--input-file', required=True, type=click.Path(exists=True), default='processed_data.csv', help="Path to input data file")
 @click.option('--col1', required=False, help="First column name")
 @click.option('--col2', required=False, help="Second column name")
 def covariance(input_file, col1, col2):
-    """
-    Calculate covariance between two columns or all numeric pairs.
-    
-    Examples:
-      # Single pair
-      python cli.py covariance --input-file processed_data.csv --col1 "Chills" --col2 "Livestock farmer"
-      
-      # All pairs
-      python cli.py covariance --input-file processed_data.csv
-    """
-    # Read data (supports CSV/Excel)
-    if input_file.endswith('.csv'):
-        df = pd.read_csv(input_file)
-    else:
-        df = pd.read_excel(input_file)
-    
-    stats_ops = StatisticalOperations(df)
-    results = stats_ops.calculate_covariance(df, col1, col2)
-    
-    click.echo(results.to_string(index=False))
-    results.to_csv("covariance_results.csv", index=False)
-    click.echo("Results saved to covariance_results.csv")
+    try:
+        if input_file:
+            df = pd.read_csv(input_file)
+
+        stats_ops = StatisticalOperations(df)
+        results = stats_ops.calculate_covariance(df, col1, col2)
+        
+        click.echo(results.to_string(index=False))
+        results.to_csv("covariance_results.csv", index=False)
+        click.echo("Results saved to covariance_results.csv")
+        
+
+        covariances = {}
+        columns = results.columns.tolist()
+        
+        # Handle different possible column structures
+        if len(columns) >= 3 and any('cov' in col.lower() for col in columns):
+            # Find covariance column
+            cov_col = next((col for col in columns if 'cov' in col.lower()), columns[-1])
+            
+            for _, row in results.iterrows():
+                if len(columns) >= 3:
+                    col1_val = row[columns[0]]
+                    col2_val = row[columns[1]]
+                    cov_val = row[cov_col]
+                    pair_key = f"{col1_val}_vs_{col2_val}"
+                    covariances[pair_key] = {
+                        'column1': col1_val,
+                        'column2': col2_val,
+                        'covariance': cov_val
+                    }
+        else:
+            covariances = results.to_dict('records')
+        
+        result = {
+            'covariances': covariances,
+            'total_pairs': len(results),
+            'columns_analyzed': [col1, col2] if col1 and col2 else 'all_numeric',
+            'dataframe_columns': columns
+        }
+        
+        filename = save_results_to_json(result, 'covariance')
+        click.echo(f"Results saved to {filename}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}")
+
+@click.command()
+@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Input CSV file with patient data')
+@click.option('--obs-names', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Path to observation names pickle file')
+@click.option('--cond-names', type=click.Path(exists=True, readable=True), default='cond_names.pkl', help='Path to condition names pickle file')
+@click.option('--min-support', default=0.1, type=float, help='Minimum support threshold for frequent itemsets (default: 0.1)')
+@click.option('--min-confidence', default=0.7, type=float, help='Minimum confidence threshold for association rules (default: 0.7)')
+@click.option('--min-lift', default=1.2, type=float, help='Minimum lift threshold for association rules (default: 1.2)')
+@click.option('--exclude-cols', type=str, help='Comma-separated list of columns to exclude from analysis')
+@click.option('--network-analysis/--no-network-analysis', default=True, help='Include network centrality analysis (default: True)')
+@click.option('--export-csv/--no-export-csv', default=True, help='Export association rules to CSV file (default: True)')
+def symptom_pattern(input, obs_names, cond_names, min_support, min_confidence, min_lift, exclude_cols, network_analysis, export_csv):
+    try:
+        # Load the data
+        df = pd.read_csv(input)
+        click.echo(f"Loaded data with {len(df)} patients and {len(df.columns)} columns")
+        
+        # Parse exclude columns
+        exclude_list = None
+        if exclude_cols:
+            exclude_list = [col.strip() for col in exclude_cols.split(',')]
+        
+        stats_ops = StatisticalOperations(df)
+        
+        result = stats_ops.symptom_pattern_analysis_analysis(
+            obs_names_path=obs_names,
+            cond_names_path=cond_names,
+            min_support=min_support,
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+            exclude_cols=exclude_list,
+            include_network_analysis=network_analysis,
+            export_csv=export_csv
+        )
+        
+        if "error" in result:
+            click.echo(f"Error: {result['error']}")
+            return
+        
+        click.echo(f"Parameters used:")
+        click.echo(f"  - Min Support: {min_support}")
+        click.echo(f"  - Min Confidence: {min_confidence}")
+        click.echo(f"  - Min Lift: {min_lift}")
+        click.echo(f"  - Symptoms analyzed: {result['parameters']['total_symptoms_analyzed']}")
+        click.echo(f"  - Patients with symptoms: {result['parameters']['total_patients_with_symptoms']}")
+        
+        click.echo(f"\nFrequent itemsets found: {result['frequent_itemsets']['count']}")
+        click.echo(f"Strong association rules: {result['association_rules']['strong_rules_count']}")
+        
+        # Display top association rules
+        if result['association_rules']['rules']:
+            click.echo(f"\nTop Association Rules:")
+            for i, rule in enumerate(result['association_rules']['rules'][:10]):
+                click.echo(f"  {i+1}. {rule['antecedents']} => {rule['consequents']}")
+                click.echo(f"     Support: {rule['support']:.3f}, Confidence: {rule['confidence']:.3f}, Lift: {rule['lift']:.3f}")
+        
+        # Display network analysis results
+        if network_analysis and 'network_analysis' in result:
+            click.echo(f"\nNetwork Analysis:")
+            click.echo(f"  - Total nodes: {result['network_analysis']['total_nodes']}")
+            click.echo(f"  - Total edges: {result['network_analysis']['total_edges']}")
+            click.echo(f"  - Most central symptoms/conditions:")
+            for node_info in result['network_analysis']['most_central_nodes'][:5]:
+                click.echo(f"    {node_info['node']} ({node_info['type']}) - Centrality: {node_info['degree_centrality']:.3f}")
+        
+        # Save results to JSON
+        filename = save_results_to_json(result, 'symptom-pattern')
+        click.echo(f"\nResults saved to {filename}")
+        
+        if export_csv:
+            click.echo(f"Association rules exported to association_rules.csv")
+        
+    except Exception as e:
+        click.echo(f"Error: {str(e)}")
+
 
 @click.command()
 @click.option('--data-file', '-d', default='operations.json', help='JSON file containing operation results (default: operations.json)')
 @click.option('--csv-file', '-f', default='processed_data.csv', help='CSV file to create plot from directly (default: processed_data.csv)')
-@click.option('--plot-type', '-t', default='bar', type=click.Choice(['bar', 'line', 'scatter', 'histogram', 'box', 'violin', 'heatmap', 'pie']), help='Type of plot to create (default: bar)')
+@click.option('--plot-type', '-t', default='bar', type=click.Choice(['bar', 'line', 'scatter', 'histogram', 'box', 'violin', 'heatmap', 'pie', 'network']), help='Type of plot to create (default: bar)')
 @click.option('--operation', '-op', help='Specific operation to plot (if multiple operations in JSON)')
 @click.option('--title', help='Plot title (auto-generated if not provided)')
 @click.option('--x-label', '-x', help='X-axis column name or label')
@@ -798,7 +927,7 @@ def covariance(input_file, col1, col2):
 @click.option('--facet-column', help='Column name for creating subplots/facets')
 @click.option('--width', default=800, help='Plot width in pixels (default: 800)')
 @click.option('--height', default=600, help='Plot height in pixels (default: 600)')
-@click.option('--theme', default='plotly', type=click.Choice(['plotly', 'plotly_white', 'plotly_dark', 'ggplot2', 'seaborn', 'simple_white']), help='Plot theme/style (default: plotly)')
+@click.option('--theme', default='plotly_dark', type=click.Choice(['plotly', 'plotly_white', 'plotly_dark', 'ggplot2', 'seaborn', 'simple_white']), help='Plot theme/style (default: plotly)')
 @click.option('--output', '-o', help='Output file path for PNG (auto-generated with timestamp if not provided)')
 @click.option('--show', is_flag=True, help='Display the plot in browser after creation')
 @click.option('--top-n', default=15, help='Show only top N features (default: 15)')
@@ -809,7 +938,6 @@ def plot(data_file, csv_file, plot_type, operation, title, x_label, y_label, col
         operation_type = None
         data_source = None
         
-        # PRIORITY 1: Try to load from operations JSON first
         if os.path.exists(data_file):
             try:
                 with open(data_file, 'r') as f:
@@ -858,20 +986,6 @@ def plot(data_file, csv_file, plot_type, operation, title, x_label, y_label, col
             except Exception as e:
                 click.echo(f"⚠️  Error reading {data_file}: {e}")
         
-        # PRIORITY 2: Only fallback to CSV if operations.json failed AND CSV exists
-        if (data is None or data.empty) and csv_file and os.path.exists(csv_file):
-            try:
-                data = pd.read_csv(csv_file)
-                data_source = f"CSV file {csv_file}"
-                if not title:
-                    title = f"{plot_type.capitalize()} Plot from {os.path.basename(csv_file)}"
-                click.echo(f"📊 Fallback: Loaded CSV data with {len(data)} rows and {len(data.columns)} columns")
-                click.echo(f"📋 CSV columns: {list(data.columns)}")
-            except Exception as e:
-                click.echo(f"❌ Error reading CSV file {csv_file}: {e}")
-                data = None
-        
-        # Error if no data found
         if data is None or data.empty:
             if not os.path.exists(data_file) and not os.path.exists(csv_file):
                 click.echo(f"❌ Error: Neither '{data_file}' nor '{csv_file}' found")
@@ -879,7 +993,6 @@ def plot(data_file, csv_file, plot_type, operation, title, x_label, y_label, col
                 click.echo("❌ Error: No valid data found for plotting")
             return
         
-        # Set appropriate labels based on operation type
         if operation_type:
             if not x_label:
                 x_label = "Features" if operation_type in ['mean', 'std', 'range', 'median', 'mode'] else "Categories"
@@ -889,7 +1002,6 @@ def plot(data_file, csv_file, plot_type, operation, title, x_label, y_label, col
         click.echo(f"🎨 Creating {plot_type} plot from {data_source}")
         click.echo(f"📏 Plot dimensions: {width}x{height}, Theme: {theme}")
         
-        # Create the plot using the create_plot function from plotter.py
         fig = create_plot(
             data=data,
             plot_type=plot_type,
@@ -918,7 +1030,72 @@ def plot(data_file, csv_file, plot_type, operation, title, x_label, y_label, col
         click.echo("Full error details:")
         click.echo(traceback.format_exc())
 
+@click.command()
+@click.option('--input', '-i', type=click.Path(exists=True, readable=True), default='processed_data.csv', help='Input CSV file with patient data')
+@click.option('--operations-file', default='operations.json', help='JSON file containing operation results (default: operations.json)')
+@click.option('--plots-file', default='plotly.json', help='JSON file containing plot data (default: plotly.json)')
+@click.option('--output-dir', default='reports', help='Output directory for the report (default: reports)')
+@click.option('--render-html', default=True, type=bool, help='Render HTML from Quarto document (default: True)')
+def generate_report(input, operations_file, plots_file, output_dir, render_html):
+    try:
+        df = pd.read_csv(input)
+        click.echo(f"📊 Loaded dataset with {len(df)} patients and {len(df.columns)} columns")
 
+        stats_ops = StatisticalOperations(df)
+        
+        click.echo("🔄 Generating comprehensive analytics report...")
+        result = stats_ops.generate_report(
+            operations_file=operations_file,
+            plots_file=plots_file,
+            output_dir=output_dir,
+            render_html=render_html
+        )
+        
+        if result["success"]:
+            click.echo("✅ Report generated successfully!")
+            click.echo(f"📁 Report name: {result['report_name']}")
+            click.echo(f"📄 Files created:")
+            for file_type, file_path in result["files_created"].items():
+                click.echo(f"   - {file_type}: {file_path}")
+            
+            click.echo(f"\n📊 Report Summary:")
+            click.echo(f"   - Operations analyzed: {result['summary']['total_operations']}")
+            click.echo(f"   - Plots included: {result['summary']['total_plots']}")
+            click.echo(f"   - Dataset size: {result['summary']['dataset_rows']:,} rows × {result['summary']['dataset_columns']} columns")
+            
+            if render_html:
+                if result.get("render_success", False):
+                    click.echo(f"✅ HTML report rendered successfully!")
+                    if "html_report" in result["files_created"]:
+                        click.echo(f"🌐 HTML report: {result['files_created']['html_report']}")
+                    
+                    if result.get("browser_opened", False):
+                        click.echo("🌐 Report opened in browser!")
+                else:
+                    click.echo("⚠️  HTML rendering failed:")
+                    click.echo(f"   Error: {result.get('render_error', 'Unknown error')}")
+                    click.echo("   Note: Make sure Quarto is installed and available in PATH")
+                    click.echo("   You can still view the .qmd file or install Quarto from https://quarto.org")
+            
+            click.echo(f"\n📋 Next Steps:")
+            click.echo("   1. Review the generated report for insights")
+            click.echo("   2. Share the HTML report with stakeholders")
+            click.echo("   3. Use findings for model development")
+            click.echo("   4. Set up automated reporting pipeline")
+            
+        else:
+            click.echo(f"❌ Error generating report: {result['error']}")
+            click.echo(f"   Error type: {result.get('error_type', 'Unknown')}")
+            click.echo("   Please check your data files and try again")
+    
+    except FileNotFoundError as e:
+        click.echo(f"❌ File not found: {e}")
+        click.echo("   Please ensure the input CSV file exists")
+    except Exception as e:
+        click.echo(f"❌ Unexpected error: {str(e)}")
+        import traceback
+        click.echo("Full error details:")
+        click.echo(traceback.format_exc())
 
 
 @click.group()
@@ -941,6 +1118,8 @@ cli.add_command(prevalence)
 cli.add_command(corr_coefficient)
 cli.add_command(covariance)
 cli.add_command(plot)
+cli.add_command(symptom_pattern)
+cli.add_command(generate_report)
 cli.add_command(join)
 
 if __name__ == '__main__':
