@@ -1,0 +1,275 @@
+---
+title: "Healthcare Analytics Report"
+author: "Analytics SDK"
+date: "July 09, 2025"
+format:
+  html:
+    theme: flatly
+    toc: true
+    toc-location: left
+    toc-depth: 2
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+    page-layout: full
+    fig-width: 12
+    fig-height: 8
+    css: styles.css
+    grid:
+      sidebar-width: 280px
+      body-width: 1100px
+      margin-width: 180px
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{python}
+import json
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import numpy as np
+from datetime import datetime
+import plotly.io as pio
+from IPython.display import HTML, display
+
+# Load data
+with open('report_data.json', 'r') as f:
+    report_data = json.load(f)
+
+operations_data = report_data['operations']
+plots_data = report_data['plots']
+dataset_overview = report_data['dataset_overview']
+```
+
+```{python}
+operations_results = operations_data.get('results', [])
+plots_list = plots_data.get('plots', [])
+
+# Create a mapping of operations to their corresponding plots
+operation_plots = {}
+for i, plot in enumerate(plots_list):
+    plot_name = plot.get('name', f'Plot {i+1}')
+    plot_type = plot.get('type', 'unknown')
+    
+    # Try to match plots with operations based on naming or content
+    for op in operations_results:
+        op_name = op['operation']
+        if op_name.lower() in plot_name.lower() or plot_name.lower() in op_name.lower():
+            if op_name not in operation_plots:
+                operation_plots[op_name] = []
+            operation_plots[op_name].append(plot)
+
+print("Processing operations and their visualizations...")
+```
+
+## Analysis Results
+
+```{python}
+for i, operation in enumerate(operations_results, 1):
+    operation_name = operation['operation']
+    operation_data = operation.get('data', {})
+    operation_timestamp = operation.get('timestamp', 'N/A')
+    
+    print(f"\n")
+    print(f"{i}. {operation_name.upper().replace('_', ' ')} ANALYSIS")
+    print(f"Executed at: {operation_timestamp}")
+    print(f"\n")
+    
+    # Display operation-specific results
+    if operation_name == 'download_data':
+        print("Data Download Summary")
+        if isinstance(operation_data, dict):
+            for key, value in operation_data.items():
+                if isinstance(value, (list, dict)):
+                    print(f"{key.title()}: {len(value)} items")
+                else:
+                    print(f"{key.title()}: {value}")
+        else:
+            print("Data download completed successfully")
+    
+    elif operation_name in ['mean', 'median', 'mode', 'std', 'range']:
+        print(f"{operation_name.title()} Statistics")
+        if isinstance(operation_data, dict) and operation_data:
+            # Create DataFrame for better display
+            stats_df = pd.DataFrame(list(operation_data.items()), columns=['Feature', operation_name.title()])
+            # Sort by value (descending for most metrics)
+            if operation_name != 'mode':
+                stats_df = stats_df.sort_values(operation_name.title(), ascending=False)
+            
+            print(f"\nTop 10 Results:")
+            print(stats_df.head(10).to_markdown(index=False))
+        else:
+            print(f"Result: {operation_data}")
+    
+    elif operation_name == 'frequency':
+        print("Frequency Analysis")
+        if isinstance(operation_data, dict) and operation_data:
+            freq_df = pd.DataFrame(list(operation_data.items()), columns=['Category', 'Frequency'])
+            freq_df = freq_df.sort_values('Frequency', ascending=False)
+            
+            print(f"\nTop 15 Most Frequent Categories:")
+            print(freq_df.head(15).to_markdown(index=False))
+    
+    elif operation_name == 'correlation':
+        print("Correlation Analysis")
+        if isinstance(operation_data, dict) and operation_data:
+            corr_df = pd.DataFrame(list(operation_data.items()), columns=['Feature Pair', 'Correlation'])
+            corr_df = corr_df.sort_values('Correlation', key=abs, ascending=False)
+            
+            print(f"\nTop 15 Correlations:")
+            print(corr_df.head(15).to_markdown(index=False))
+    
+    elif operation_name == 'cluster':
+        print("Clustering Analysis")
+        if isinstance(operation_data, dict):
+            if 'cluster_summary' in operation_data:
+                cluster_summary = operation_data['cluster_summary']
+                print(f"\nNumber of Clusters Identified: {len(cluster_summary)}")
+                
+                cluster_df = pd.DataFrame(cluster_summary).T
+                print(f"\nCluster Distribution:")
+                print(cluster_df.to_markdown())
+            else:
+                print("Clustering analysis completed successfully")
+                for key, value in operation_data.items():
+                    if isinstance(value, (list, dict)):
+                        print(f"{key.title()}: {len(value)} items")
+                    else:
+                        print(f"{key.title()}: {value}")
+    
+    elif operation_name == 'prevalence':
+        print("Prevalence Analysis")
+        if isinstance(operation_data, dict) and operation_data:
+            prev_df = pd.DataFrame(list(operation_data.items()), columns=['Condition', 'Prevalence'])
+            prev_df = prev_df.sort_values('Prevalence', ascending=False)
+            
+            print(f"\nCondition Prevalence Rates:")
+            print(prev_df.to_markdown(index=False))
+    
+    elif operation_name == 'symptom_pattern':
+        print("Symptom Pattern Analysis")
+        if isinstance(operation_data, dict):
+            if 'association_rules' in operation_data:
+                rules = operation_data['association_rules'].get('rules', [])
+                if rules:
+                    print(f"\nAssociation Rules Discovered: {len(rules)}")
+                    
+                    print(f"\nTop 10 Association Rules:")
+                    for j, rule in enumerate(rules[:10], 1):
+                        print(f"{j}. {rule.get('antecedents', '')} → {rule.get('consequents', '')}")
+                        print(f"   Support: {rule.get('support', 0):.3f}, Confidence: {rule.get('confidence', 0):.3f}, Lift: {rule.get('lift', 0):.3f}")
+            
+            if 'network_analysis' in operation_data:
+                network = operation_data['network_analysis']
+                print(f"\nNetwork Analysis Results:")
+                print(f"Total Nodes: {network.get('total_nodes', 0)}")
+                print(f"Total Edges: {network.get('total_edges', 0)}")
+                
+                if 'most_central_nodes' in network:
+                    print(f"\nMost Central Nodes:")
+                    for node in network['most_central_nodes'][:5]:
+                        print(f"  {node.get('node', 'N/A')} ({node.get('type', 'N/A')}): {node.get('degree_centrality', 0):.3f}")
+    
+    else:
+        # Generic handling for other operations
+        print(f"{operation_name.title().replace('_', ' ')} Results")
+        if isinstance(operation_data, dict) and operation_data:
+            for key, value in operation_data.items():
+                if isinstance(value, (list, dict)):
+                    print(f"{key.title()}: {len(value)} items")
+                else:
+                    print(f"{key.title()}: {value}")
+        elif isinstance(operation_data, list) and operation_data:
+            if len(operation_data) > 0 and isinstance(operation_data[0], dict):
+                df_display = pd.DataFrame(operation_data)
+                print(df_display.head(10).to_markdown(index=False))
+            else:
+                print("\n".join([f"{item}" for item in operation_data[:10]]))
+        else:
+            print(f"Operation completed successfully")
+    
+    # Display related plots
+    if operation_name in operation_plots:
+        print(f"\nVisualizations")
+        for plot_info in operation_plots[operation_name]:
+            plot_name = plot_info.get('name', 'Visualization')
+            plot_type = plot_info.get('type', 'unknown')
+            
+            print(f"\n{plot_name} ({plot_type})")
+            
+            # Display the actual Plotly plot
+            if 'data' in plot_info:
+                try:
+                    plot_data = plot_info['data']
+                    if isinstance(plot_data, str):
+                        # If data is a JSON string, parse it
+                        plot_data = json.loads(plot_data)
+                    
+                    # Create Plotly figure from the data
+                    if isinstance(plot_data, dict):
+                        # Check if it's a complete figure dict
+                        if 'data' in plot_data and 'layout' in plot_data:
+                            fig = go.Figure(data=plot_data['data'], layout=plot_data['layout'])
+                        else:
+                            fig = go.Figure(plot_data)
+                        
+                        # Update layout for better display
+                        fig.update_layout(
+                            height=500,
+                            showlegend=True,
+                            title_font_size=16,
+                            template='plotly_white'
+                        )
+                        
+                        fig.show()
+                    else:
+                        print("Plot data format not recognized")
+                        
+                except Exception as e:
+                    print(f"Could not display plot: {str(e)}")
+            else:
+                print("No plot data available")
+    
+    print(f"\n")
+    print("---")
+```
+
+## Summary & Insights
+
+```{python}
+# Generate summary statistics
+print("Analysis Summary")
+print(f"\nDataset Information:")
+print(f"Total records analyzed: {dataset_overview['basic_info']['total_rows']:,d}")
+print(f"Features examined: {dataset_overview['basic_info']['total_columns']:,d}")
+print(f"Memory footprint: {dataset_overview['basic_info']['memory_usage']}")
+
+print(f"\nOperations Executed:")
+operation_counts = {}
+for op in operations_results:
+    op_name = op['operation']
+    operation_counts[op_name] = operation_counts.get(op_name, 0) + 1
+
+for op_name, count in sorted(operation_counts.items()):
+    print(f"{op_name.replace('_', ' ').title()}: {count} time(s)")
+
+print(f"\nVisualizations Generated:")
+print(f"Total plots created: {len(plots_list)}")
+
+plot_types = {}
+for plot in plots_list:
+    plot_type = plot.get('type', 'unknown')
+    plot_types[plot_type] = plot_types.get(plot_type, 0) + 1
+
+for plot_type, count in sorted(plot_types.items()):
+    print(f"{plot_type.title()}: {count} plot(s)")
+```
+
+---
+
+Report Generated: 2025-07-09 14:52:39  
+Analysis Framework: v1.0.0
