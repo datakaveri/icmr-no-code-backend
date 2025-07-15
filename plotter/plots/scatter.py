@@ -136,7 +136,6 @@ def create_scatter_plot(df, x_label, y_label, color_column, size_column, facet_c
                 height=650
             )
             
-            # Remove the colorbar/gradient legend completely
             fig.update_coloraxes(showscale=False)
             
             return fig

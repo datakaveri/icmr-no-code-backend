@@ -228,7 +228,7 @@ def convert_operation_data_to_df(data, operation_type, top_n=15):
             df = pd.DataFrame(cluster_data)
             return df
 
-    elif operation_type == 'symptom_pattern':
+    elif operation_type == 'symptom-pattern':
         csv_filename = 'association_rules.csv'
         if os.path.exists(csv_filename):
             df = pd.read_csv(csv_filename)
