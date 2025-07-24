@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import silhouette_score
 from .statistical import StatisticalAnalytics
 
 class ClusteringAnalytics:
@@ -38,8 +39,37 @@ class ClusteringAnalytics:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        kmeans = KMeans(n_clusters=clusters, random_state=42)
-        cluster_labels = kmeans.fit_predict(X_scaled)
+        #kmeans = KMeans(n_clusters=clusters, random_state=42)
+        #cluster_labels = kmeans.fit_predict(X_scaled)
+
+        silhouette_score_value = None
+        if clusters is None:
+            best_score = -1
+            best_k = None
+            best_model = None
+            best_labels = None
+            for k in range(2, min(11, len(X_scaled))):  # Try k from 2 to 10 or up to num_samples
+                try:
+                    model = KMeans(n_clusters=k, random_state=42)
+                    labels = model.fit_predict(X_scaled)
+                    score = silhouette_score(X_scaled, labels)
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                        best_model = model
+                        best_labels = labels
+                except Exception:
+                    continue
+            if best_model is None:
+                return {"error": "Failed to determine optimal number of clusters via silhouette analysis."}
+            clusters = best_k
+            kmeans = best_model
+            cluster_labels = best_labels
+            silhouette_score_value = best_score
+        else:
+            kmeans = KMeans(n_clusters=clusters, random_state=42)
+            cluster_labels = kmeans.fit_predict(X_scaled)
+            silhouette_score_value = silhouette_score(X_scaled, cluster_labels)
 
         cluster_profiles = X.copy()
         cluster_profiles['Cluster'] = cluster_labels
@@ -59,7 +89,8 @@ class ClusteringAnalytics:
             "features": features_list,
             "top_clusters": cluster_info,
             "cluster_labels": cluster_labels.tolist(),
-            "cluster_sizes": sizes.to_dict()
+            "cluster_sizes": sizes.to_dict(),
+            "silhouette_score": float(silhouette_score_value)
         }
         
         if segment_clusters and obs_names_path and cond_names_path:
