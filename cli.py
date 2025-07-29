@@ -439,7 +439,7 @@ def frequency(file, column, proportion):
 @click.command()
 @click.option('--file', '-f', default='processed_data.csv', required=True, help='CSV file path')
 @click.option('--features', help='Comma-separated list of features to use for clustering')
-@click.option('--clusters', '-k', default=3, help='Number of clusters (default: 3)')
+@click.option('--clusters', '-k', default=0, help='Number of clusters (0 or less = auto-detect)')
 @click.option('--topx', '-t', default=3, help='Number of top clusters to show (default: 3)')
 @click.option('--segment-clusters', is_flag=True, help='If set, perform patient segmentation on resulting clusters')
 @click.option('--obs-names-path', type=click.Path(exists=True, readable=True), default='obs_names.pkl', help='Observation names pickle file')
@@ -459,16 +459,20 @@ def cluster(file, features, clusters, topx, segment_clusters, obs_names_path, co
         if 'error' in result:
             click.echo(f"Error: {result['error']}")
             return
-        click.echo(f"Clustering Analysis with {result['clusters']} clusters:")
+        click.echo(f"Clustering completed with {result['clusters']} clusters.")
         click.echo(f"Features used: {', '.join(result['features'])}")
-        click.echo(f"\nTop {topx} most distinct clusters:")
-        for cluster_id, info in result['top_clusters'].items():
-            click.echo(f"\nCluster {cluster_id}:")
-            click.echo(f"  Size: {info['size']} samples")
-            click.echo(f"  Distinctness Score: {info['distinctness']:.4f}")
-            click.echo("  Feature Means:")
-            for feature, mean_val in info['means'].items():
-                click.echo(f"    {feature}: {mean_val:.4f}")
+        if len(result['top_clusters']) > 1:
+            click.echo(f"\nTop {min(topx, len(result['top_clusters']))} most distinct clusters:")
+            for cluster_id, info in result['top_clusters'].items():
+                click.echo(f"\nCluster {cluster_id}:")
+                click.echo(f"  Size: {info['size']} samples")
+                click.echo(f"  Distinctness Score: {info['distinctness']:.4f}")
+                click.echo("  Feature Means:")
+                for feature, mean_val in info['means'].items():
+                    click.echo(f"    {feature}: {mean_val:.4f}")
+        else:
+            click.echo(f"\nOnly {len(result['top_clusters'])} cluster found. Skipping 'top distinct clusters' display.")
+
         # --- Patient segmentation output ---
         if segment_clusters and 'cluster_segmentation' in result:
             seg = result['cluster_segmentation']
